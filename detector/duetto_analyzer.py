@@ -211,10 +211,12 @@ async def analyze_hotel(
         except Exception:
             pass
 
-        # Also check console logs for Duetto references
+        # Check console logs for direct Duetto references (not CSP violations)
         duetto_console = [
             log for log in monitor.console_logs
             if "duetto" in log.lower()
+            and "content security policy" not in log.lower()
+            and "violates" not in log.lower()
         ]
         if duetto_console:
             result.gamechanger_evidence.extend(
@@ -356,9 +358,13 @@ async def _try_submit_modal_booking_form(
     checkin = (date.today() + timedelta(days=14)).strftime("%Y-%m-%d")
     checkout = (date.today() + timedelta(days=15)).strftime("%Y-%m-%d")
 
-    # Look for visible date inputs inside modals or overlays
+    # Step 1: If there's a property/destination dropdown, pick the first one.
+    # Brand-level sites (Hard Rock, Marriott, etc.) require selecting a property
+    # before the booking form can be submitted.
+    await _select_first_property(page)
+
+    # Step 2: Fill date inputs
     date_input_selectors = [
-        # Hidden inputs with booking-related names (SynXis pattern)
         'input[name="arrive"]',
         'input[name="depart"]',
         'input[name="checkin"]',
@@ -394,22 +400,59 @@ async def _try_submit_modal_booking_form(
     if not filled_dates:
         return False
 
-    # Now submit the form — look for a submit button in the modal
+    # Step 3: Submit the form. First try building the URL from form data
+    # (most reliable), then fall back to clicking submit buttons.
+    form_url = await page.evaluate("""() => {
+        var forms = document.querySelectorAll('form');
+        for (var i = 0; i < forms.length; i++) {
+            var f = forms[i];
+            var data = {};
+            new FormData(f).forEach(function(v, k) { data[k] = v; });
+            // Check if this form has booking-related fields
+            var keys = Object.keys(data).join(' ').toLowerCase();
+            if (keys.indexOf('arrive') !== -1 || keys.indexOf('checkin') !== -1 ||
+                keys.indexOf('datein') !== -1 || keys.indexOf('check_in') !== -1) {
+                if (f.action) {
+                    var url = new URL(f.action);
+                    Object.entries(data).forEach(function(pair) {
+                        url.searchParams.set(pair[0], pair[1]);
+                    });
+                    return url.toString();
+                }
+            }
+        }
+        return null;
+    }""")
+
+    if form_url:
+        # Inject dates into the constructed URL too
+        form_url = _inject_dates_into_url(form_url)
+        new_page = await context.new_page()
+        monitor.attach(new_page)
+        try:
+            await new_page.goto(
+                form_url, wait_until="domcontentloaded", timeout=30000
+            )
+        except Exception:
+            pass
+        await new_page.wait_for_timeout(5000)
+        return True
+
+    # Fallback: try clicking visible submit buttons
     submit_selectors = [
-        'button:has-text("Book Now")',
-        'button:has-text("Search")',
-        'button:has-text("Check Availability")',
-        'button:has-text("Find Rooms")',
-        'button[type="submit"]',
-        'input[type="submit"]',
+        'button:has-text("Book Now"):visible',
+        'button:has-text("Search"):visible',
+        'button:has-text("Check Availability"):visible',
+        'button:has-text("Find Rooms"):visible',
+        'button[type="submit"]:visible',
+        'input[type="submit"]:visible',
     ]
 
     url_before = page.url
     for selector in submit_selectors:
         try:
-            locator = page.locator(selector).last  # .last to get modal button
+            locator = page.locator(selector).first
             if await locator.is_visible(timeout=1000):
-                # The form submission might navigate or open a new page
                 try:
                     async with context.expect_page(timeout=10000) as new_page_info:
                         await locator.click(timeout=3000)
@@ -424,7 +467,6 @@ async def _try_submit_modal_booking_form(
                     await new_page.wait_for_timeout(5000)
                     return True
                 except Exception:
-                    # No new page — check if current page navigated
                     await page.wait_for_timeout(3000)
                     if page.url != url_before:
                         try:
@@ -438,6 +480,45 @@ async def _try_submit_modal_booking_form(
             continue
 
     return False
+
+
+async def _select_first_property(page: Page):
+    """Select the first non-empty option in a property/destination dropdown.
+
+    Brand-level hotel sites have a dropdown to pick a specific property
+    before the booking form can be submitted.
+    """
+    # Find select elements that look like property/destination pickers
+    property_select_keywords = [
+        "location", "hotel", "property", "destination", "resort",
+    ]
+
+    selected = await page.evaluate("""(keywords) => {
+        var selects = document.querySelectorAll('select');
+        for (var i = 0; i < selects.length; i++) {
+            var sel = selects[i];
+            var idName = ((sel.id || '') + ' ' + (sel.name || '') + ' ' + (sel.className || '')).toLowerCase();
+            var isProperty = keywords.some(function(k) { return idName.indexOf(k) !== -1; });
+            if (!isProperty) continue;
+
+            // Count non-empty options — if >3, it's likely a property list
+            var options = sel.querySelectorAll('option');
+            var nonEmpty = [];
+            options.forEach(function(o) {
+                if (o.value && o.value.trim()) nonEmpty.push(o.value);
+            });
+            if (nonEmpty.length < 2) continue;
+
+            // Pick the first non-empty option
+            sel.value = nonEmpty[0];
+            sel.dispatchEvent(new Event('change', {bubbles: true}));
+            return nonEmpty[0];
+        }
+        return null;
+    }""", property_select_keywords)
+
+    if selected:
+        await page.wait_for_timeout(1000)  # Let any dependent fields update
 
 
 async def _click_booking_element(page: Page, link: BookingLinkInfo):
