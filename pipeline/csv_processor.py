@@ -64,6 +64,7 @@ def results_to_csv(batch: BatchResult) -> str:
         "booking_engine_url",
         "booking_links_count",
         "pixel_request_urls",
+        "proof_snippets",
         "scan_duration_seconds",
         "errors",
     ])
@@ -79,6 +80,7 @@ def results_to_csv(batch: BatchResult) -> str:
             r.booking_engine_url,
             len(r.booking_links_found),
             "; ".join(pr.url for pr in r.pixel_requests),
+            " | ".join(r.proof_snippets) if r.proof_snippets else "",
             f"{r.scan_duration_seconds:.1f}",
             "; ".join(r.errors) if r.errors else "",
         ])

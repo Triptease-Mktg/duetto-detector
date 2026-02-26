@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import sys
+from urllib.parse import urlparse
 
 from pipeline.csv_processor import parse_csv, results_to_csv
 from pipeline.batch_runner import run_batch
@@ -12,7 +13,13 @@ def main():
         description="Detect Duetto products on hotel booking engines",
     )
     parser.add_argument(
-        "csv_file", help="Path to CSV file (columns: name,website)"
+        "csv_file", nargs="?", help="Path to CSV file (columns: name,website)"
+    )
+    parser.add_argument(
+        "--url", help="Single hotel website URL to scan"
+    )
+    parser.add_argument(
+        "--name", help="Hotel name (used with --url)"
     )
     parser.add_argument(
         "-o", "--output", default="results.csv", help="Output CSV path"
@@ -27,11 +34,21 @@ def main():
 
     args = parser.parse_args()
 
-    with open(args.csv_file, "r") as f:
-        hotels = parse_csv(f.read())
+    if args.url:
+        url = args.url
+        if not url.startswith(("http://", "https://")):
+            url = f"https://{url}"
+        name = args.name or urlparse(url).netloc.replace("www.", "")
+        hotels = [{"name": name, "website": url}]
+    elif args.csv_file:
+        with open(args.csv_file, "r") as f:
+            hotels = parse_csv(f.read())
+    else:
+        parser.error("Provide a CSV file or use --url")
+        return
 
     if not hotels:
-        print("No valid hotels found in CSV.")
+        print("No valid hotels found.")
         sys.exit(1)
 
     total = len(hotels)

@@ -2,7 +2,7 @@ import json
 import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
@@ -47,6 +47,24 @@ async def start_scan(csv_file: UploadFile = File(...)):
     job_id = uuid.uuid4().hex[:12]
     _jobs[job_id] = {"hotels": hotels, "status": "pending"}
     return {"job_id": job_id, "hotel_count": len(hotels)}
+
+
+@app.post("/scan-url")
+async def start_scan_url(name: str = Form(...), website: str = Form(...)):
+    """Start a scan for a single hotel URL."""
+    name = name.strip()
+    website = website.strip()
+    if not name or not website:
+        raise HTTPException(400, "Hotel name and website URL are required")
+    if not website.startswith(("http://", "https://")):
+        website = f"https://{website}"
+
+    job_id = uuid.uuid4().hex[:12]
+    _jobs[job_id] = {
+        "hotels": [{"name": name, "website": website}],
+        "status": "pending",
+    }
+    return {"job_id": job_id, "hotel_count": 1}
 
 
 @app.get("/stream/{job_id}")

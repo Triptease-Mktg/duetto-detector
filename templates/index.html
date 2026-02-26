@@ -156,6 +156,35 @@
             color: #888;
             margin-top: 8px;
         }
+        .divider {
+            display: flex;
+            align-items: center;
+            margin: 24px 0;
+            color: #999;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        .divider::before, .divider::after {
+            content: '';
+            flex: 1;
+            height: 1px;
+            background: #ddd;
+        }
+        .divider::before { margin-right: 16px; }
+        .divider::after { margin-left: 16px; }
+        .url-form { display: flex; flex-direction: column; gap: 12px; }
+        .url-form input {
+            padding: 10px 14px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            font-size: 15px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        .url-form input:focus { border-color: #4A90D9; }
+        .input-row { display: flex; gap: 12px; }
+        .input-row input:first-child { flex: 1; }
+        .input-row input:last-child { flex: 2; }
     </style>
 </head>
 <body>
@@ -175,6 +204,16 @@
                 <input type="file" id="csv-input" accept=".csv">
             </div>
             <div class="file-info" id="file-info"></div>
+
+            <div class="divider">OR</div>
+
+            <div class="url-form">
+                <div class="input-row">
+                    <input type="text" id="hotel-name" placeholder="Hotel name">
+                    <input type="url" id="hotel-url" placeholder="https://www.hotel-website.com">
+                </div>
+            </div>
+
             <div class="actions" style="margin-top:16px">
                 <button class="btn" id="scan-btn" disabled>Start Scan</button>
             </div>
@@ -214,6 +253,8 @@
         const csvInput = document.getElementById('csv-input');
         const fileInfo = document.getElementById('file-info');
         const scanBtn = document.getElementById('scan-btn');
+        const hotelName = document.getElementById('hotel-name');
+        const hotelUrl = document.getElementById('hotel-url');
         const progressSection = document.getElementById('progress-section');
         const progressText = document.getElementById('progress-text');
         const progressBar = document.getElementById('progress-bar');
@@ -225,6 +266,12 @@
 
         let selectedFile = null;
         let currentJobId = null;
+
+        function updateScanBtn() {
+            const hasFile = !!selectedFile;
+            const hasUrl = hotelName.value.trim() && hotelUrl.value.trim();
+            scanBtn.disabled = !hasFile && !hasUrl;
+        }
 
         uploadArea.addEventListener('click', () => csvInput.click());
         uploadArea.addEventListener('dragover', e => {
@@ -243,6 +290,15 @@
             if (csvInput.files.length) handleFile(csvInput.files[0]);
         });
 
+        hotelName.addEventListener('input', () => {
+            if (hotelName.value.trim() || hotelUrl.value.trim()) selectedFile = null;
+            updateScanBtn();
+        });
+        hotelUrl.addEventListener('input', () => {
+            if (hotelName.value.trim() || hotelUrl.value.trim()) selectedFile = null;
+            updateScanBtn();
+        });
+
         function handleFile(file) {
             if (!file.name.endsWith('.csv')) {
                 fileInfo.textContent = 'Please upload a .csv file';
@@ -252,22 +308,37 @@
             selectedFile = file;
             fileInfo.textContent = `Selected: ${file.name}`;
             fileInfo.style.color = '#4A90D9';
-            scanBtn.disabled = false;
+            hotelName.value = '';
+            hotelUrl.value = '';
+            updateScanBtn();
         }
 
         scanBtn.addEventListener('click', async () => {
-            if (!selectedFile) return;
             scanBtn.disabled = true;
 
-            const formData = new FormData();
-            formData.append('csv_file', selectedFile);
+            const hasUrl = hotelName.value.trim() && hotelUrl.value.trim();
+            let endpoint, body;
+
+            if (hasUrl) {
+                endpoint = '/scan-url';
+                body = new FormData();
+                body.append('name', hotelName.value.trim());
+                body.append('website', hotelUrl.value.trim());
+            } else if (selectedFile) {
+                endpoint = '/scan';
+                body = new FormData();
+                body.append('csv_file', selectedFile);
+            } else {
+                scanBtn.disabled = false;
+                return;
+            }
 
             try {
-                const res = await fetch('/scan', { method: 'POST', body: formData });
+                const res = await fetch(endpoint, { method: 'POST', body });
                 const data = await res.json();
 
                 if (!res.ok) {
-                    fileInfo.textContent = data.detail || 'Upload failed';
+                    fileInfo.textContent = data.detail || 'Scan failed';
                     fileInfo.style.color = '#dc3545';
                     scanBtn.disabled = false;
                     return;
@@ -281,7 +352,7 @@
 
                 startSSE(data.job_id, data.hotel_count);
             } catch (err) {
-                fileInfo.textContent = 'Upload failed: ' + err.message;
+                fileInfo.textContent = 'Scan failed: ' + err.message;
                 fileInfo.style.color = '#dc3545';
                 scanBtn.disabled = false;
             }

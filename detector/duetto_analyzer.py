@@ -268,6 +268,19 @@ async def analyze_hotel(
         result.console_logs = monitor.console_logs[:50]
         result.booking_engine_url = active_page.url
 
+        # Collect raw proof snippets — actual URLs, headers, DOM excerpts
+        proof: list[str] = []
+        for pr in result.pixel_requests:
+            proof.append(f"pixel_request: {pr.url}")
+        for csp in monitor.csp_headers:
+            if any(p in csp.lower() for p in NetworkMonitor.DUETTO_DOMAIN_PATTERNS):
+                snippet = csp[:500] + "..." if len(csp) > 500 else csp
+                proof.append(f"csp_header: {snippet}")
+        for ev in result.gamechanger_evidence:
+            if ev not in proof and "CSP header allows" not in ev:
+                proof.append(ev)
+        result.proof_snippets = proof
+
         # Optional screenshot
         if screenshot_dir:
             slug = "".join(
@@ -667,39 +680,52 @@ async def _check_duetto_in_source(page: Page) -> list[str]:
 
     Booking engines like SynXis embed Duetto configuration in their React
     state or inline scripts even when the pixel doesn't fire in headless mode.
+    Returns raw evidence snippets suitable for proof.
     """
     return await page.evaluate("""
         (function() {
             var evidence = [];
+            var patterns = ["duettoresearch", "duettocloud"];
 
             // Check __INITIAL_STATE__ for Duetto references (SynXis React app)
             if (window.__INITIAL_STATE__) {
                 var stateStr = JSON.stringify(window.__INITIAL_STATE__);
-                if (stateStr.toLowerCase().indexOf("duettoresearch") !== -1) {
-                    evidence.push("SynXis app state references duettoresearch.com");
-                }
-                if (stateStr.toLowerCase().indexOf("duettocloud") !== -1) {
-                    evidence.push("SynXis app state references duettocloud.com");
+                var lower = stateStr.toLowerCase();
+                for (var p = 0; p < patterns.length; p++) {
+                    var idx = lower.indexOf(patterns[p]);
+                    var found = 0;
+                    while (idx !== -1 && found < 3) {
+                        var start = Math.max(0, idx - 50);
+                        var end = Math.min(stateStr.length, idx + patterns[p].length + 50);
+                        evidence.push("__INITIAL_STATE__: ..." + stateStr.substring(start, end) + "...");
+                        found++;
+                        idx = lower.indexOf(patterns[p], idx + 1);
+                    }
                 }
             }
 
             // Check inline scripts for Duetto pixel code
             var scripts = document.querySelectorAll("script:not([src])");
             for (var i = 0; i < scripts.length; i++) {
-                var text = (scripts[i].textContent || "").toLowerCase();
-                if (text.indexOf("duettoresearch") !== -1 || text.indexOf("duettocloud") !== -1) {
-                    evidence.push("Inline script references Duetto");
-                    break;
+                var text = scripts[i].textContent || "";
+                var textLower = text.toLowerCase();
+                for (var p2 = 0; p2 < patterns.length; p2++) {
+                    var idx2 = textLower.indexOf(patterns[p2]);
+                    if (idx2 !== -1) {
+                        var start2 = Math.max(0, idx2 - 80);
+                        var end2 = Math.min(text.length, idx2 + patterns[p2].length + 80);
+                        evidence.push("inline_script: ..." + text.substring(start2, end2).trim() + "...");
+                    }
                 }
             }
 
             // Check meta tags for CSP that includes Duetto
             var metas = document.querySelectorAll("meta[http-equiv]");
             for (var j = 0; j < metas.length; j++) {
-                var content = (metas[j].content || "").toLowerCase();
-                if (content.indexOf("duettoresearch") !== -1) {
-                    evidence.push("Meta CSP allows duettoresearch.com");
-                    break;
+                var content = metas[j].content || "";
+                if (content.toLowerCase().indexOf("duettoresearch") !== -1) {
+                    var snippet = content.length > 500 ? content.substring(0, 500) + "..." : content;
+                    evidence.push("meta_csp: " + snippet);
                 }
             }
 

@@ -43,6 +43,8 @@ class DuettoDetectionResult(BaseModel):
     duetto_products: list[DuettoProduct] = []
     confidence: str = "none"  # "none", "low", "medium", "high"
 
+    proof_snippets: list[str] = []  # Raw evidence snippets (URLs, CSP headers, script src)
+
     all_captured_domains: list[str] = []
     console_logs: list[str] = []
     errors: list[str] = []
