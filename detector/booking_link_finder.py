@@ -1,6 +1,10 @@
+import logging
 import re
 from playwright.async_api import Page
 from models import BookingLinkInfo
+from config import settings
+
+logger = logging.getLogger(__name__)
 
 
 # Text patterns that indicate a booking CTA (multilingual)
@@ -213,3 +217,27 @@ def rank_booking_links(links: list[BookingLinkInfo]) -> list[BookingLinkInfo]:
         return s
 
     return sorted(links, key=score, reverse=True)
+
+
+async def find_booking_links_with_fallback(
+    page: Page, url: str
+) -> list[BookingLinkInfo]:
+    """Find booking links using Firecrawl+LLM first, with selector fallback."""
+    if settings.firecrawl_api_key and settings.anthropic_api_key:
+        try:
+            from detector.smart_link_finder import find_booking_links_smart
+
+            smart_links = await find_booking_links_smart(url)
+            if smart_links:
+                logger.info(
+                    "Firecrawl+LLM found %d booking link(s) for %s",
+                    len(smart_links), url,
+                )
+                return smart_links
+            logger.info(
+                "Firecrawl+LLM found no links for %s, falling back", url
+            )
+        except Exception as e:
+            logger.warning("Smart link finder failed for %s: %s", url, e)
+
+    return await find_booking_links(page)

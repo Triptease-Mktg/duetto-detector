@@ -8,7 +8,10 @@ from playwright.async_api import Page, BrowserContext
 from models import DuettoDetectionResult, DuettoProduct, BookingLinkInfo
 from config import settings
 from detector.network_monitor import NetworkMonitor
-from detector.booking_link_finder import find_booking_links, rank_booking_links
+from detector.booking_link_finder import (
+    find_booking_links_with_fallback,
+    rank_booking_links,
+)
 from detector.cookie_handler import dismiss_cookie_consent
 from detector.browser_session import BrowserSession
 
@@ -163,8 +166,8 @@ async def analyze_hotel(
         # Step 2: Dismiss cookie consent
         await dismiss_cookie_consent(page)
 
-        # Step 3: Find booking links
-        booking_links = await find_booking_links(page)
+        # Step 3: Find booking links (Firecrawl+LLM if configured, else selectors)
+        booking_links = await find_booking_links_with_fallback(page, website_url)
         result.booking_links_found = booking_links
 
         if not booking_links:
