@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Duetto Detector</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f5f5;
+            color: #333;
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 40px 20px;
+        }
+        h1 {
+            font-size: 28px;
+            margin-bottom: 8px;
+        }
+        .subtitle {
+            color: #666;
+            margin-bottom: 32px;
+        }
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 32px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            margin-bottom: 24px;
+        }
+        .upload-area {
+            border: 2px dashed #ddd;
+            border-radius: 8px;
+            padding: 40px;
+            text-align: center;
+            cursor: pointer;
+            transition: border-color 0.2s;
+        }
+        .upload-area:hover { border-color: #4A90D9; }
+        .upload-area.dragover { border-color: #4A90D9; background: #f0f7ff; }
+        .upload-area input { display: none; }
+        .upload-area p { margin-top: 8px; color: #888; font-size: 14px; }
+        .btn {
+            display: inline-block;
+            background: #4A90D9;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .btn:hover { background: #3a7bc8; }
+        .btn:disabled { background: #ccc; cursor: not-allowed; }
+        .btn-secondary {
+            background: #6c757d;
+        }
+        .btn-secondary:hover { background: #5a6268; }
+        .file-info {
+            margin-top: 12px;
+            font-size: 14px;
+            color: #4A90D9;
+        }
+        .progress-section { display: none; }
+        .progress-bar-container {
+            background: #e9ecef;
+            border-radius: 8px;
+            height: 8px;
+            margin: 16px 0;
+            overflow: hidden;
+        }
+        .progress-bar {
+            height: 100%;
+            background: #4A90D9;
+            border-radius: 8px;
+            transition: width 0.3s;
+            width: 0%;
+        }
+        .progress-text {
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 16px;
+        }
+        .results-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 16px;
+            font-size: 14px;
+        }
+        .results-table th {
+            text-align: left;
+            padding: 10px 12px;
+            border-bottom: 2px solid #dee2e6;
+            color: #555;
+            font-weight: 600;
+        }
+        .results-table td {
+            padding: 10px 12px;
+            border-bottom: 1px solid #eee;
+        }
+        .results-table tr:hover { background: #f8f9fa; }
+        .badge {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .badge-success { background: #d4edda; color: #155724; }
+        .badge-danger { background: #f8d7da; color: #721c24; }
+        .badge-warning { background: #fff3cd; color: #856404; }
+        .badge-secondary { background: #e9ecef; color: #6c757d; }
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        .summary-item {
+            text-align: center;
+            padding: 16px;
+            background: #f8f9fa;
+            border-radius: 8px;
+        }
+        .summary-item .number {
+            font-size: 32px;
+            font-weight: 700;
+            color: #4A90D9;
+        }
+        .summary-item .label {
+            font-size: 13px;
+            color: #666;
+            margin-top: 4px;
+        }
+        .scanning-indicator {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            background: #4A90D9;
+            border-radius: 50%;
+            animation: pulse 1s infinite;
+            margin-right: 8px;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+        .actions { margin-top: 16px; display: flex; gap: 12px; }
+        .format-note {
+            font-size: 13px;
+            color: #888;
+            margin-top: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Duetto Detector</h1>
+        <p class="subtitle">Detect Duetto Pixel & GameChanger on hotel booking engines</p>
+
+        <div class="card" id="upload-card">
+            <div class="upload-area" id="upload-area">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#999" stroke-width="1.5">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                    <polyline points="17 8 12 3 7 8"/>
+                    <line x1="12" y1="3" x2="12" y2="15"/>
+                </svg>
+                <p>Drop a CSV file here or click to browse</p>
+                <p class="format-note">Format: name,website</p>
+                <input type="file" id="csv-input" accept=".csv">
+            </div>
+            <div class="file-info" id="file-info"></div>
+            <div class="actions" style="margin-top:16px">
+                <button class="btn" id="scan-btn" disabled>Start Scan</button>
+            </div>
+        </div>
+
+        <div class="card progress-section" id="progress-section">
+            <div class="progress-text" id="progress-text">Preparing scan...</div>
+            <div class="progress-bar-container">
+                <div class="progress-bar" id="progress-bar"></div>
+            </div>
+        </div>
+
+        <div class="card progress-section" id="results-section">
+            <div class="summary-grid" id="summary-grid"></div>
+            <div class="actions">
+                <button class="btn" id="download-btn" disabled>Download CSV</button>
+                <button class="btn btn-secondary" id="new-scan-btn">New Scan</button>
+            </div>
+            <table class="results-table">
+                <thead>
+                    <tr>
+                        <th>Hotel</th>
+                        <th>Duetto Pixel</th>
+                        <th>GameChanger</th>
+                        <th>Confidence</th>
+                        <th>Booking Engine</th>
+                        <th>Time</th>
+                    </tr>
+                </thead>
+                <tbody id="results-body"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        const uploadArea = document.getElementById('upload-area');
+        const csvInput = document.getElementById('csv-input');
+        const fileInfo = document.getElementById('file-info');
+        const scanBtn = document.getElementById('scan-btn');
+        const progressSection = document.getElementById('progress-section');
+        const progressText = document.getElementById('progress-text');
+        const progressBar = document.getElementById('progress-bar');
+        const resultsSection = document.getElementById('results-section');
+        const summaryGrid = document.getElementById('summary-grid');
+        const resultsBody = document.getElementById('results-body');
+        const downloadBtn = document.getElementById('download-btn');
+        const newScanBtn = document.getElementById('new-scan-btn');
+
+        let selectedFile = null;
+        let currentJobId = null;
+
+        uploadArea.addEventListener('click', () => csvInput.click());
+        uploadArea.addEventListener('dragover', e => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+        uploadArea.addEventListener('drop', e => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+        });
+        csvInput.addEventListener('change', () => {
+            if (csvInput.files.length) handleFile(csvInput.files[0]);
+        });
+
+        function handleFile(file) {
+            if (!file.name.endsWith('.csv')) {
+                fileInfo.textContent = 'Please upload a .csv file';
+                fileInfo.style.color = '#dc3545';
+                return;
+            }
+            selectedFile = file;
+            fileInfo.textContent = `Selected: ${file.name}`;
+            fileInfo.style.color = '#4A90D9';
+            scanBtn.disabled = false;
+        }
+
+        scanBtn.addEventListener('click', async () => {
+            if (!selectedFile) return;
+            scanBtn.disabled = true;
+
+            const formData = new FormData();
+            formData.append('csv_file', selectedFile);
+
+            try {
+                const res = await fetch('/scan', { method: 'POST', body: formData });
+                const data = await res.json();
+
+                if (!res.ok) {
+                    fileInfo.textContent = data.detail || 'Upload failed';
+                    fileInfo.style.color = '#dc3545';
+                    scanBtn.disabled = false;
+                    return;
+                }
+
+                currentJobId = data.job_id;
+                progressSection.style.display = 'block';
+                resultsSection.style.display = 'block';
+                resultsBody.innerHTML = '';
+                summaryGrid.innerHTML = '';
+
+                startSSE(data.job_id, data.hotel_count);
+            } catch (err) {
+                fileInfo.textContent = 'Upload failed: ' + err.message;
+                fileInfo.style.color = '#dc3545';
+                scanBtn.disabled = false;
+            }
+        });
+
+        function startSSE(jobId, totalHotels) {
+            const source = new EventSource(`/stream/${jobId}`);
+
+            source.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+
+                if (data.type === 'started') {
+                    progressText.textContent = `Scanning ${data.total} hotels...`;
+                }
+
+                if (data.type === 'scanning') {
+                    progressText.innerHTML = `<span class="scanning-indicator"></span>Scanning: ${data.hotel}`;
+                    progressBar.style.width = `${((data.index) / totalHotels) * 100}%`;
+                }
+
+                if (data.type === 'result') {
+                    addResultRow(data);
+                    progressBar.style.width = `${((data.index + 1) / totalHotels) * 100}%`;
+                }
+
+                if (data.type === 'done') {
+                    source.close();
+                    progressText.textContent = 'Scan complete!';
+                    progressBar.style.width = '100%';
+                    downloadBtn.disabled = false;
+                    showSummary(data.summary);
+                }
+
+                if (data.type === 'error') {
+                    source.close();
+                    progressText.textContent = 'Error: ' + data.message;
+                }
+            };
+
+            source.onerror = () => {
+                source.close();
+                progressText.textContent = 'Connection lost. Check results below.';
+            };
+        }
+
+        function addResultRow(data) {
+            const row = document.createElement('tr');
+            const isDuetto = data.duetto_pixel || data.gamechanger;
+            const pixelBadge = data.duetto_pixel
+                ? '<span class="badge badge-success">YES</span>'
+                : '<span class="badge badge-secondary">No</span>';
+            const gcBadge = data.gamechanger
+                ? '<span class="badge badge-success">YES</span>'
+                : '<span class="badge badge-secondary">No</span>';
+
+            const confClass = {
+                high: 'badge-success',
+                medium: 'badge-warning',
+                low: 'badge-warning',
+                none: 'badge-secondary',
+            }[data.confidence] || 'badge-secondary';
+
+            const beUrl = data.booking_engine_url || '-';
+            const beDisplay = beUrl.length > 40 ? beUrl.substring(0, 40) + '...' : beUrl;
+
+            row.innerHTML = `
+                <td><strong>${data.hotel}</strong></td>
+                <td>${pixelBadge}</td>
+                <td>${gcBadge}</td>
+                <td><span class="badge ${confClass}">${data.confidence}</span></td>
+                <td title="${beUrl}">${beDisplay}</td>
+                <td>${data.scan_duration}s</td>
+            `;
+            resultsBody.appendChild(row);
+        }
+
+        function showSummary(summary) {
+            summaryGrid.innerHTML = `
+                <div class="summary-item">
+                    <div class="number">${summary.total}</div>
+                    <div class="label">Hotels Scanned</div>
+                </div>
+                <div class="summary-item">
+                    <div class="number">${summary.pixel_count}</div>
+                    <div class="label">Duetto Pixel</div>
+                </div>
+                <div class="summary-item">
+                    <div class="number">${summary.gamechanger_count}</div>
+                    <div class="label">GameChanger</div>
+                </div>
+            `;
+        }
+
+        downloadBtn.addEventListener('click', () => {
+            if (currentJobId) {
+                window.location.href = `/download/${currentJobId}`;
+            }
+        });
+
+        newScanBtn.addEventListener('click', () => {
+            location.reload();
+        });
+    </script>
+</body>
+</html>
