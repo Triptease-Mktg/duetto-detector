@@ -6,8 +6,26 @@ import io
 from models import BatchResult
 
 
+NAME_ALIASES = [
+    "name", "hotel_name", "hotel name", "account name", "property",
+    "property name", "hotel",
+]
+WEBSITE_ALIASES = [
+    "website", "url", "website url", "site", "hotel url", "web",
+    "homepage", "link",
+]
+
+
+def _find_column(fieldnames: list[str], aliases: list[str]) -> str | None:
+    """Find the first matching column name from a list of aliases."""
+    for alias in aliases:
+        if alias in fieldnames:
+            return alias
+    return None
+
+
 def parse_csv(content: str | bytes) -> list[dict]:
-    """Parse CSV with columns: name,website. Returns list of dicts."""
+    """Parse CSV with flexible column names. Returns list of dicts."""
     if isinstance(content, bytes):
         content = content.decode("utf-8-sig")  # Handle BOM
 
@@ -16,10 +34,13 @@ def parse_csv(content: str | bytes) -> list[dict]:
     if reader.fieldnames:
         reader.fieldnames = [f.strip().lower() for f in reader.fieldnames]
 
+    name_col = _find_column(reader.fieldnames or [], NAME_ALIASES)
+    website_col = _find_column(reader.fieldnames or [], WEBSITE_ALIASES)
+
     hotels = []
     for row in reader:
-        name = row.get("name", "").strip()
-        website = row.get("website", "").strip()
+        name = row.get(name_col or "name", "").strip()
+        website = row.get(website_col or "website", "").strip()
         if not name or not website:
             continue
         if not website.startswith(("http://", "https://")):
