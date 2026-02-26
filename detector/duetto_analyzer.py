@@ -194,6 +194,13 @@ async def analyze_hotel(
 
         # Try to trigger rate display by interacting with the page
         active_page = await _get_active_page(context, page)
+
+        # Dismiss cookie consent on the booking engine page too — tag managers
+        # like Tealium won't fire tracking pixels (including Duetto) until the
+        # user accepts cookies on the booking engine domain
+        await dismiss_cookie_consent(active_page)
+        await active_page.wait_for_timeout(2000)
+
         await _try_trigger_rate_search(active_page)
         await active_page.wait_for_timeout(settings.booking_engine_wait_ms)
 
@@ -210,6 +217,28 @@ async def analyze_hotel(
                 result.gamechanger_evidence = gamechanger_evidence
         except Exception:
             pass
+
+        # Step 8: Check CSP headers and page source for Duetto references
+        # Some booking engines whitelist Duetto in CSP or embed config
+        # referencing Duetto even when the pixel doesn't fire in headless
+        try:
+            source_evidence = await _check_duetto_in_source(active_page)
+            if source_evidence:
+                result.gamechanger_evidence.extend(source_evidence)
+        except Exception:
+            pass
+
+        if monitor.duetto_in_csp:
+            result.gamechanger_evidence.append(
+                "CSP header allows *.duettoresearch.com"
+            )
+            # If CSP references Duetto but pixel didn't fire, still flag it
+            if not result.duetto_pixel_detected:
+                result.duetto_pixel_detected = True
+                result.errors.append(
+                    "Pixel detected via CSP allowlist (pixel did not fire "
+                    "in headless mode)"
+                )
 
         # Check console logs for direct Duetto references (not CSP violations)
         duetto_console = [
@@ -630,12 +659,63 @@ async def _check_gamechanger_dom(page: Page) -> list[str]:
     return evidence
 
 
+async def _check_duetto_in_source(page: Page) -> list[str]:
+    """Check the page HTML source and app state for Duetto references.
+
+    Booking engines like SynXis embed Duetto configuration in their React
+    state or inline scripts even when the pixel doesn't fire in headless mode.
+    """
+    return await page.evaluate("""
+        (function() {
+            var evidence = [];
+
+            // Check __INITIAL_STATE__ for Duetto references (SynXis React app)
+            if (window.__INITIAL_STATE__) {
+                var stateStr = JSON.stringify(window.__INITIAL_STATE__);
+                if (stateStr.toLowerCase().indexOf("duettoresearch") !== -1) {
+                    evidence.push("SynXis app state references duettoresearch.com");
+                }
+                if (stateStr.toLowerCase().indexOf("duettocloud") !== -1) {
+                    evidence.push("SynXis app state references duettocloud.com");
+                }
+            }
+
+            // Check inline scripts for Duetto pixel code
+            var scripts = document.querySelectorAll("script:not([src])");
+            for (var i = 0; i < scripts.length; i++) {
+                var text = (scripts[i].textContent || "").toLowerCase();
+                if (text.indexOf("duettoresearch") !== -1 || text.indexOf("duettocloud") !== -1) {
+                    evidence.push("Inline script references Duetto");
+                    break;
+                }
+            }
+
+            // Check meta tags for CSP that includes Duetto
+            var metas = document.querySelectorAll("meta[http-equiv]");
+            for (var j = 0; j < metas.length; j++) {
+                var content = (metas[j].content || "").toLowerCase();
+                if (content.indexOf("duettoresearch") !== -1) {
+                    evidence.push("Meta CSP allows duettoresearch.com");
+                    break;
+                }
+            }
+
+            return evidence;
+        })()
+    """)
+
+
 def _calculate_confidence(result: DuettoDetectionResult) -> str:
     """Calculate confidence level based on detection signals."""
+    # Check if pixel was only detected via CSP (not actual network traffic)
+    csp_only = any(
+        "CSP allowlist" in e for e in result.errors
+    )
+
     score = 0
 
     if result.duetto_pixel_detected:
-        score += 3
+        score += 1 if csp_only else 3  # CSP-only is weaker signal
     if result.gamechanger_detected:
         score += 3
     if result.gamechanger_evidence:
@@ -644,6 +724,10 @@ def _calculate_confidence(result: DuettoDetectionResult) -> str:
         score += 1
     if result.errors:
         score -= 1
+
+    if csp_only:
+        # CSP/source-based detection is indirect — cap at medium
+        return "medium" if score >= 2 else "low"
 
     if score >= 4:
         return "high"

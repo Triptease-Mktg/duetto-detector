@@ -20,6 +20,10 @@ class BrowserSession:
                 "--disable-setuid-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-gpu",
+                # Disable web security so CSP doesn't block third-party
+                # tracking pixels (like Duetto) from loading
+                "--disable-web-security",
+                "--disable-features=IsolateOrigins,site-per-process",
             ],
         )
         return self

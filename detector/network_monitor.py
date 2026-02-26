@@ -28,10 +28,12 @@ class NetworkMonitor:
         self.all_requests: list[dict] = []
         self.duetto_requests: list[dict] = []
         self.console_logs: list[str] = []
+        self.csp_headers: list[str] = []
 
     def attach(self, page):
         """Attach listeners to a Playwright page."""
         page.on("request", self._on_request)
+        page.on("response", self._on_response)
         page.on("console", self._on_console)
 
     def _on_request(self, request):
@@ -46,6 +48,17 @@ class NetworkMonitor:
         url_lower = request.url.lower()
         if any(p in url_lower for p in self.DUETTO_DOMAIN_PATTERNS):
             self.duetto_requests.append(entry)
+
+    def _on_response(self, response):
+        """Capture CSP headers from document responses."""
+        try:
+            if response.request.resource_type in ("document", "subdocument"):
+                headers = response.headers
+                for name in ("content-security-policy", "content-security-policy-report-only"):
+                    if name in headers:
+                        self.csp_headers.append(headers[name])
+        except Exception:
+            pass
 
     def _on_console(self, msg):
         self.console_logs.append(msg.text)
@@ -76,6 +89,14 @@ class NetworkMonitor:
             for r in self.duetto_requests
             if any(p in r["url"].lower() for p in self.DUETTO_PIXEL_PATTERNS)
         ]
+
+    @property
+    def duetto_in_csp(self) -> bool:
+        """Check if any CSP header references Duetto domains."""
+        return any(
+            any(p in csp.lower() for p in self.DUETTO_DOMAIN_PATTERNS)
+            for csp in self.csp_headers
+        )
 
     @property
     def captured_domains(self) -> list[str]:
