@@ -10,6 +10,12 @@ class DuettoProduct(str, Enum):
     NONE = "None Detected"
 
 
+class CompetitorRMSDetection(BaseModel):
+    vendor: str               # e.g., "Triptease"
+    category: str             # e.g., "Direct Booking Platform"
+    evidence: list[str] = []  # e.g., ["network: triptease.io/widget.js", "cookie: _tt_session"]
+
+
 class BookingLinkInfo(BaseModel):
     text: str
     href: str
@@ -45,6 +51,8 @@ class DuettoDetectionResult(BaseModel):
 
     proof_snippets: list[str] = []  # Raw evidence snippets (URLs, CSP headers, script src)
 
+    competitor_rms: list[CompetitorRMSDetection] = []
+
     all_captured_domains: list[str] = []
     console_logs: list[str] = []
     errors: list[str] = []
@@ -57,5 +65,6 @@ class BatchResult(BaseModel):
     scanned: int
     duetto_pixel_count: int
     gamechanger_count: int
+    competitor_rms_count: int = 0
     results: list[DuettoDetectionResult]
     scan_date: datetime = Field(default_factory=datetime.utcnow)

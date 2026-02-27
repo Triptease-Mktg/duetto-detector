@@ -22,6 +22,9 @@ def main():
         "--name", help="Hotel name (used with --url)"
     )
     parser.add_argument(
+        "--city", help="Hotel city (used with --url for AI booking link discovery)"
+    )
+    parser.add_argument(
         "-o", "--output", default="results.csv", help="Output CSV path"
     )
     parser.add_argument(
@@ -39,7 +42,8 @@ def main():
         if not url.startswith(("http://", "https://")):
             url = f"https://{url}"
         name = args.name or urlparse(url).netloc.replace("www.", "")
-        hotels = [{"name": name, "website": url}]
+        city = args.city or ""
+        hotels = [{"name": name, "website": url, "city": city}]
     elif args.csv_file:
         with open(args.csv_file, "r") as f:
             hotels = parse_csv(f.read())
@@ -84,7 +88,11 @@ def main():
     for r in result.results:
         products = ", ".join(p.value for p in r.duetto_products)
         status = "DUETTO" if r.duetto_pixel_detected or r.gamechanger_detected else "-"
-        print(f"  {status:8s} | {r.hotel_name} | {products}")
+        competitors = ", ".join(c.vendor for c in r.competitor_rms) if r.competitor_rms else ""
+        line = f"  {status:8s} | {r.hotel_name} | {products}"
+        if competitors:
+            line += f" | Other: {competitors}"
+        print(line)
 
 
 if __name__ == "__main__":

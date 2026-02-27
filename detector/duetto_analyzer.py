@@ -124,6 +124,7 @@ async def analyze_hotel(
     website_url: str,
     browser_session: BrowserSession,
     screenshot_dir: str | None = None,
+    city: str = "",
 ) -> DuettoDetectionResult:
     """Run complete Duetto detection for one hotel."""
     start_time = time.time()
@@ -167,7 +168,7 @@ async def analyze_hotel(
         await dismiss_cookie_consent(page)
 
         # Step 3: Find booking links (Firecrawl+LLM if configured, else selectors)
-        booking_links = await find_booking_links_with_fallback(page, website_url, hotel_name)
+        booking_links = await find_booking_links_with_fallback(page, website_url, hotel_name, city=city)
         result.booking_links_found = booking_links
 
         if not booking_links:
@@ -254,6 +255,13 @@ async def analyze_hotel(
             result.gamechanger_evidence.extend(
                 [f"console: {log}" for log in duetto_console[:5]]
             )
+
+        # Step 9: Detect competitor RMS/tech vendors
+        try:
+            from detector.competitor_rms import detect_competitor_rms
+            result.competitor_rms = await detect_competitor_rms(monitor, active_page)
+        except Exception:
+            pass
 
         # Build product list
         if result.duetto_pixel_detected:

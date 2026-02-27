@@ -189,7 +189,10 @@
 </head>
 <body>
     <div class="container">
-        <h1>Duetto Detector</h1>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <h1>Duetto Detector</h1>
+            <a href="/dashboard" class="btn btn-secondary" style="font-size:14px;padding:8px 16px;text-decoration:none">Dashboard</a>
+        </div>
         <p class="subtitle">Detect Duetto Pixel & GameChanger on hotel booking engines</p>
 
         <div class="card" id="upload-card">
@@ -200,7 +203,7 @@
                     <line x1="12" y1="3" x2="12" y2="15"/>
                 </svg>
                 <p>Drop a CSV file here or click to browse</p>
-                <p class="format-note">Format: name,website</p>
+                <p class="format-note">Format: name, website (optional: city)</p>
                 <input type="file" id="csv-input" accept=".csv">
             </div>
             <div class="file-info" id="file-info"></div>
@@ -209,8 +212,11 @@
 
             <div class="url-form">
                 <div class="input-row">
-                    <input type="text" id="hotel-name" placeholder="Hotel name">
-                    <input type="url" id="hotel-url" placeholder="https://www.hotel-website.com">
+                    <input type="text" id="hotel-name" placeholder="Hotel name" style="flex:2">
+                    <input type="text" id="hotel-city" placeholder="City (optional)" style="flex:1">
+                </div>
+                <div>
+                    <input type="url" id="hotel-url" placeholder="https://www.hotel-website.com" style="width:100%;padding:10px 14px;border:1px solid #ddd;border-radius:8px;font-size:15px;outline:none">
                 </div>
             </div>
 
@@ -239,6 +245,7 @@
                         <th>Duetto Pixel</th>
                         <th>GameChanger</th>
                         <th>Confidence</th>
+                        <th>Other Tech</th>
                         <th>Booking Engine</th>
                         <th>Time</th>
                     </tr>
@@ -254,6 +261,7 @@
         const fileInfo = document.getElementById('file-info');
         const scanBtn = document.getElementById('scan-btn');
         const hotelName = document.getElementById('hotel-name');
+        const hotelCity = document.getElementById('hotel-city');
         const hotelUrl = document.getElementById('hotel-url');
         const progressSection = document.getElementById('progress-section');
         const progressText = document.getElementById('progress-text');
@@ -324,6 +332,7 @@
                 body = new FormData();
                 body.append('name', hotelName.value.trim());
                 body.append('website', hotelUrl.value.trim());
+                if (hotelCity.value.trim()) body.append('city', hotelCity.value.trim());
             } else if (selectedFile) {
                 endpoint = '/scan';
                 body = new FormData();
@@ -418,11 +427,16 @@
             const beUrl = data.booking_engine_url || '-';
             const beDisplay = beUrl.length > 40 ? beUrl.substring(0, 40) + '...' : beUrl;
 
+            const competitors = (data.competitor_rms || [])
+                .map(c => `<span class="badge badge-warning" title="${c.category}">${c.vendor}</span>`)
+                .join(' ') || '<span class="badge badge-secondary">None</span>';
+
             row.innerHTML = `
                 <td><strong>${data.hotel}</strong></td>
                 <td>${pixelBadge}</td>
                 <td>${gcBadge}</td>
                 <td><span class="badge ${confClass}">${data.confidence}</span></td>
+                <td>${competitors}</td>
                 <td title="${beUrl}">${beDisplay}</td>
                 <td>${data.scan_duration}s</td>
             `;
@@ -443,6 +457,10 @@
                     <div class="number">${summary.gamechanger_count}</div>
                     <div class="label">GameChanger</div>
                 </div>
+                <div class="summary-item">
+                    <div class="number">${summary.competitor_rms_count || 0}</div>
+                    <div class="label">Other Tech</div>
+                </div>
             `;
         }
 
@@ -453,8 +471,31 @@
         });
 
         newScanBtn.addEventListener('click', () => {
-            location.reload();
+            window.location.href = '/';
         });
+
+        // Reconnect to existing job if ?job_id= is in the URL
+        (function() {
+            const params = new URLSearchParams(window.location.search);
+            const jobId = params.get('job_id');
+            if (!jobId) return;
+
+            currentJobId = jobId;
+            document.getElementById('upload-card').style.display = 'none';
+            progressSection.style.display = 'block';
+            resultsSection.style.display = 'block';
+
+            // Fetch job info to get hotel count, then connect SSE
+            fetch(`/api/jobs/${jobId}`)
+                .then(r => r.json())
+                .then(data => {
+                    const total = data.job.total_hotels;
+                    startSSE(jobId, total);
+                })
+                .catch(() => {
+                    progressText.textContent = 'Failed to load job';
+                });
+        })();
     </script>
 </body>
 </html>

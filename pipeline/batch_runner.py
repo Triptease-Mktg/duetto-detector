@@ -31,6 +31,7 @@ async def run_batch(
                     website_url=hotel["website"],
                     browser_session=browser,
                     screenshot_dir=screenshot_dir,
+                    city=hotel.get("city", ""),
                 )
 
                 if on_progress:

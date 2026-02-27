@@ -14,6 +14,10 @@ WEBSITE_ALIASES = [
     "website", "url", "website url", "site", "hotel url", "web",
     "homepage", "link",
 ]
+CITY_ALIASES = [
+    "city", "location", "city/location", "destination", "town",
+    "hotel city", "property city",
+]
 
 
 def _find_column(fieldnames: list[str], aliases: list[str]) -> str | None:
@@ -36,16 +40,18 @@ def parse_csv(content: str | bytes) -> list[dict]:
 
     name_col = _find_column(reader.fieldnames or [], NAME_ALIASES)
     website_col = _find_column(reader.fieldnames or [], WEBSITE_ALIASES)
+    city_col = _find_column(reader.fieldnames or [], CITY_ALIASES)
 
     hotels = []
     for row in reader:
         name = row.get(name_col or "name", "").strip()
         website = row.get(website_col or "website", "").strip()
+        city = row.get(city_col or "city", "").strip() if city_col else ""
         if not name or not website:
             continue
         if not website.startswith(("http://", "https://")):
             website = f"https://{website}"
-        hotels.append({"name": name, "website": website})
+        hotels.append({"name": name, "website": website, "city": city})
 
     return hotels
 
@@ -65,6 +71,7 @@ def results_to_csv(batch: BatchResult) -> str:
         "booking_links_count",
         "pixel_request_urls",
         "proof_snippets",
+        "competitor_rms",
         "scan_duration_seconds",
         "errors",
     ])
@@ -81,6 +88,7 @@ def results_to_csv(batch: BatchResult) -> str:
             len(r.booking_links_found),
             "; ".join(pr.url for pr in r.pixel_requests),
             " | ".join(r.proof_snippets) if r.proof_snippets else "",
+            "; ".join(f"{c.vendor} ({c.category})" for c in r.competitor_rms) if r.competitor_rms else "",
             f"{r.scan_duration_seconds:.1f}",
             "; ".join(r.errors) if r.errors else "",
         ])
