@@ -60,16 +60,18 @@ async def start_scan(csv_file: UploadFile = File(...)):
 @app.post("/scan-url")
 async def start_scan_url(
     name: str = Form(...),
-    website: str = Form(...),
+    website: str = Form(""),
     city: str = Form(""),
 ):
-    """Start a background scan for a single hotel URL."""
+    """Start a background scan for a single hotel."""
     name = name.strip()
     website = website.strip()
     city = city.strip()
-    if not name or not website:
-        raise HTTPException(400, "Hotel name and website URL are required")
-    if not website.startswith(("http://", "https://")):
+    if not name:
+        raise HTTPException(400, "Hotel name is required")
+    if not website and not city:
+        raise HTTPException(400, "Provide either a website URL or a city (for AI lookup)")
+    if website and not website.startswith(("http://", "https://")):
         website = f"https://{website}"
 
     hotels = [{"name": name, "website": website, "city": city}]

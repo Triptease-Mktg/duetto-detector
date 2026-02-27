@@ -53,6 +53,8 @@ class DuettoDetectionResult(BaseModel):
 
     competitor_rms: list[CompetitorRMSDetection] = []
 
+    pages_analyzed: list[str] = []  # URLs of all pages checked
+
     all_captured_domains: list[str] = []
     console_logs: list[str] = []
     errors: list[str] = []

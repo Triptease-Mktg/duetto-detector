@@ -18,6 +18,9 @@ _tasks: dict[str, asyncio.Task] = {}
 
 def launch_job(job_id: str, hotels: list[dict]) -> None:
     """Fire-and-forget a background scan job."""
+    if job_id in _tasks:
+        logger.warning("Job %s already running, ignoring duplicate launch", job_id)
+        return
     task = asyncio.create_task(_run_job(job_id, hotels))
     _tasks[job_id] = task
     task.add_done_callback(lambda _: _tasks.pop(job_id, None))

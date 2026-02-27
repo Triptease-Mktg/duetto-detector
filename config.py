@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     headless: bool = True
     firecrawl_api_key: str = ""
     anthropic_api_key: str = ""
+    perplexity_api_key: str = ""
     db_path: str = "data/duetto.db"
 
     model_config = {"env_prefix": "DUETTO_", "env_file": ".env"}

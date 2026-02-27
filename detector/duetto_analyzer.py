@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 from datetime import date, timedelta
 from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
@@ -14,6 +15,8 @@ from detector.booking_link_finder import (
 )
 from detector.cookie_handler import dismiss_cookie_consent
 from detector.browser_session import BrowserSession
+
+logger = logging.getLogger(__name__)
 
 
 def _inject_dates_into_url(url: str) -> str:
@@ -126,8 +129,41 @@ async def analyze_hotel(
     screenshot_dir: str | None = None,
     city: str = "",
 ) -> DuettoDetectionResult:
-    """Run complete Duetto detection for one hotel."""
+    """Run complete Duetto detection for one hotel.
+
+    Three-phase analysis:
+      Phase 1: Official website (homepage)
+      Phase 2: Booking engine landing page (no dates)
+      Phase 3: Booking engine with dates injected
+    """
     start_time = time.time()
+
+    # Step 0: Use Perplexity to find URLs if needed
+    booking_url = ""
+    if city:
+        try:
+            from detector.perplexity_lookup import lookup_hotel_urls
+
+            lookup = await lookup_hotel_urls(hotel_name, city)
+            if not website_url and lookup["official_website"]:
+                website_url = lookup["official_website"]
+            if lookup["booking_url"]:
+                booking_url = lookup["booking_url"]
+            logger.info(
+                "Perplexity for %s: website=%s, booking=%s",
+                hotel_name, website_url or "?", booking_url or "?",
+            )
+        except Exception as e:
+            logger.warning("Perplexity lookup failed for %s: %s", hotel_name, e)
+
+    if not website_url:
+        return DuettoDetectionResult(
+            hotel_name=hotel_name,
+            website_url="",
+            errors=["Could not determine hotel website URL"],
+            scan_duration_seconds=round(time.time() - start_time, 1),
+        )
+
     result = DuettoDetectionResult(
         hotel_name=hotel_name,
         website_url=website_url,
@@ -143,100 +179,81 @@ async def analyze_hotel(
         # Monitor any new pages/popups that open
         context.on("page", lambda new_page: monitor.attach(new_page))
 
-        # Step 1: Navigate to hotel homepage
-        try:
-            await page.goto(
-                website_url,
-                wait_until="networkidle",
-                timeout=settings.scan_timeout_ms,
-            )
-        except Exception as e:
-            result.errors.append(f"Homepage load failed: {e}")
-            try:
-                await page.goto(
-                    website_url,
-                    wait_until="domcontentloaded",
-                    timeout=settings.scan_timeout_ms,
+        # ── Phase 1: Official Website ──────────────────────────────────
+        logger.info("[%s] Phase 1: Official website %s", hotel_name, website_url)
+        if await _navigate_safe(page, website_url):
+            await dismiss_cookie_consent(page)
+            result.pages_analyzed.append(page.url)
+            await _detect_on_page(page, monitor, result)
+
+            # Find booking URL from homepage if Perplexity didn't provide one
+            if not booking_url:
+                booking_links = await find_booking_links_with_fallback(
+                    page, website_url, hotel_name, city=city
                 )
-            except Exception as e2:
-                result.errors.append(f"Homepage fallback also failed: {e2}")
-                return result
-
-        await page.wait_for_timeout(settings.page_load_wait_ms)
-
-        # Step 2: Dismiss cookie consent
-        await dismiss_cookie_consent(page)
-
-        # Step 3: Find booking links (Firecrawl+LLM if configured, else selectors)
-        booking_links = await find_booking_links_with_fallback(page, website_url, hotel_name, city=city)
-        result.booking_links_found = booking_links
-
-        if not booking_links:
-            result.errors.append("No booking links found on homepage")
+                result.booking_links_found = booking_links
+                if booking_links:
+                    ranked = rank_booking_links(booking_links)
+                    best = ranked[0]
+                    result.booking_link_followed = best
+                    if best.href and best.href.startswith("http"):
+                        booking_url = best.href
+                    else:
+                        # No full URL — click-based navigation
+                        await _follow_booking_link(page, context, best, monitor)
+                        active = await _get_active_page(context, page)
+                        booking_url = active.url
         else:
-            # Step 4: Follow the best booking link, with dates injected
-            ranked = rank_booking_links(booking_links)
-            best_link = ranked[0]
+            result.errors.append(f"Homepage load failed: {website_url}")
 
-            # Inject dates into the booking engine URL
-            if best_link.href and best_link.href.startswith("http"):
-                best_link = BookingLinkInfo(
-                    text=best_link.text,
-                    href=_inject_dates_into_url(best_link.href),
-                    link_type=best_link.link_type,
-                    detection_method=best_link.detection_method,
-                    opens_in=best_link.opens_in,
-                )
+        # ── Phase 2: Booking Landing (no dates) ───────────────────────
+        if booking_url and booking_url.startswith("http"):
+            logger.info("[%s] Phase 2: Booking landing %s", hotel_name, booking_url)
+            result.booking_link_followed = result.booking_link_followed or BookingLinkInfo(
+                text="Perplexity-suggested booking link",
+                href=booking_url,
+                link_type="link",
+                detection_method="perplexity",
+                opens_in="new_tab",
+            )
 
-            result.booking_link_followed = best_link
-            await _follow_booking_link(page, context, best_link, monitor)
+            booking_page = await context.new_page()
+            monitor.attach(booking_page)
 
-        # Step 5: Wait for booking engine to fully load & pixel to fire
-        # The Duetto pixel fires after rooms/rates are displayed, which can
-        # take time after the initial page load
-        await page.wait_for_timeout(settings.booking_engine_wait_ms)
+            if await _navigate_safe(booking_page, booking_url):
+                await dismiss_cookie_consent(booking_page)
+                result.pages_analyzed.append(booking_page.url)
+                await _detect_on_page(booking_page, monitor, result)
 
-        # Try to trigger rate display by interacting with the page
-        active_page = await _get_active_page(context, page)
+                # ── Phase 3: Booking with Dates ────────────────────────
+                dated_url = _inject_dates_into_url(booking_url)
+                logger.info("[%s] Phase 3: Booking with dates %s", hotel_name, dated_url)
 
-        # Dismiss cookie consent on the booking engine page too — tag managers
-        # like Tealium won't fire tracking pixels (including Duetto) until the
-        # user accepts cookies on the booking engine domain
-        await dismiss_cookie_consent(active_page)
-        await active_page.wait_for_timeout(2000)
+                if await _navigate_safe(booking_page, dated_url):
+                    await dismiss_cookie_consent(booking_page)
+                    await _try_trigger_rate_search(booking_page)
+                    await booking_page.wait_for_timeout(settings.booking_engine_wait_ms)
+                    result.pages_analyzed.append(booking_page.url)
+                    await _detect_on_page(booking_page, monitor, result)
 
-        await _try_trigger_rate_search(active_page)
-        await active_page.wait_for_timeout(settings.booking_engine_wait_ms)
+                result.booking_engine_url = booking_page.url
+            else:
+                result.errors.append(f"Booking page load failed: {booking_url}")
+        else:
+            if not booking_url:
+                result.errors.append("No booking URL found")
 
-        # Step 6: Check network traffic for Duetto signals
+        # ── Finalize: Network-level checks ─────────────────────────────
         result.duetto_pixel_detected = monitor.duetto_pixel_detected
         result.pixel_requests = monitor.pixel_requests
-        result.gamechanger_detected = monitor.gamechanger_in_network
 
-        # Step 7: Deep DOM inspection for GameChanger
-        try:
-            gamechanger_evidence = await _check_gamechanger_dom(active_page)
-            if gamechanger_evidence:
-                result.gamechanger_detected = True
-                result.gamechanger_evidence = gamechanger_evidence
-        except Exception:
-            pass
-
-        # Step 8: Check CSP headers and page source for Duetto references
-        # Some booking engines whitelist Duetto in CSP or embed config
-        # referencing Duetto even when the pixel doesn't fire in headless
-        try:
-            source_evidence = await _check_duetto_in_source(active_page)
-            if source_evidence:
-                result.gamechanger_evidence.extend(source_evidence)
-        except Exception:
-            pass
+        if not result.gamechanger_detected:
+            result.gamechanger_detected = monitor.gamechanger_in_network
 
         if monitor.duetto_in_csp:
             result.gamechanger_evidence.append(
                 "CSP header allows *.duettoresearch.com"
             )
-            # If CSP references Duetto but pixel didn't fire, still flag it
             if not result.duetto_pixel_detected:
                 result.duetto_pixel_detected = True
                 result.errors.append(
@@ -244,7 +261,7 @@ async def analyze_hotel(
                     "in headless mode)"
                 )
 
-        # Check console logs for direct Duetto references (not CSP violations)
+        # Console logs with direct Duetto references (not CSP violations)
         duetto_console = [
             log for log in monitor.console_logs
             if "duetto" in log.lower()
@@ -255,13 +272,6 @@ async def analyze_hotel(
             result.gamechanger_evidence.extend(
                 [f"console: {log}" for log in duetto_console[:5]]
             )
-
-        # Step 9: Detect competitor RMS/tech vendors
-        try:
-            from detector.competitor_rms import detect_competitor_rms
-            result.competitor_rms = await detect_competitor_rms(monitor, active_page)
-        except Exception:
-            pass
 
         # Build product list
         if result.duetto_pixel_detected:
@@ -274,9 +284,8 @@ async def analyze_hotel(
         result.confidence = _calculate_confidence(result)
         result.all_captured_domains = monitor.captured_domains
         result.console_logs = monitor.console_logs[:50]
-        result.booking_engine_url = active_page.url
 
-        # Collect raw proof snippets — actual URLs, headers, DOM excerpts
+        # Collect proof snippets
         proof: list[str] = []
         for pr in result.pixel_requests:
             proof.append(f"pixel_request: {pr.url}")
@@ -289,14 +298,15 @@ async def analyze_hotel(
                 proof.append(ev)
         result.proof_snippets = proof
 
-        # Optional screenshot
+        # Optional screenshot (take on the last active page)
         if screenshot_dir:
             slug = "".join(
                 c if c.isalnum() else "_" for c in hotel_name
             ).strip("_")
             screenshot_path = f"{screenshot_dir}/{slug}_booking.png"
             try:
-                await active_page.screenshot(path=screenshot_path)
+                active = await _get_active_page(context, page)
+                await active.screenshot(path=screenshot_path)
                 result.screenshot_path = screenshot_path
             except Exception:
                 pass
@@ -308,6 +318,64 @@ async def analyze_hotel(
         result.scan_duration_seconds = round(time.time() - start_time, 1)
 
     return result
+
+
+async def _navigate_safe(page: Page, url: str) -> bool:
+    """Navigate to a URL with fallback. Returns True on success."""
+    try:
+        await page.goto(
+            url,
+            wait_until="networkidle",
+            timeout=settings.scan_timeout_ms,
+        )
+        await page.wait_for_timeout(settings.page_load_wait_ms)
+        return True
+    except Exception:
+        try:
+            await page.goto(
+                url,
+                wait_until="domcontentloaded",
+                timeout=settings.scan_timeout_ms,
+            )
+            await page.wait_for_timeout(settings.page_load_wait_ms)
+            return True
+        except Exception:
+            return False
+
+
+async def _detect_on_page(
+    page: Page, monitor: NetworkMonitor, result: DuettoDetectionResult
+) -> None:
+    """Run DOM-level detection on the current page and accumulate into result."""
+    # GameChanger DOM inspection
+    try:
+        gc_evidence = await _check_gamechanger_dom(page)
+        if gc_evidence:
+            result.gamechanger_detected = True
+            result.gamechanger_evidence.extend(gc_evidence)
+    except Exception:
+        pass
+
+    # Check page source / __INITIAL_STATE__ for Duetto references
+    try:
+        source_evidence = await _check_duetto_in_source(page)
+        if source_evidence:
+            result.gamechanger_evidence.extend(source_evidence)
+    except Exception:
+        pass
+
+    # Competitor RMS detection
+    try:
+        from detector.competitor_rms import detect_competitor_rms
+        new_competitors = await detect_competitor_rms(monitor, page)
+        # Deduplicate by vendor name
+        existing_vendors = {c.vendor for c in result.competitor_rms}
+        for comp in new_competitors:
+            if comp.vendor not in existing_vendors:
+                result.competitor_rms.append(comp)
+                existing_vendors.add(comp.vendor)
+    except Exception:
+        pass
 
 
 async def _get_active_page(context: BrowserContext, fallback: Page) -> Page:
@@ -330,8 +398,7 @@ async def _follow_booking_link(
         await page.wait_for_timeout(3000)
         return
 
-    # For links with full URLs, navigate directly (more reliable than
-    # clicking, and lets us use the date-injected URL)
+    # For links with full URLs, navigate directly
     if link.href and link.href.startswith("http"):
         if link.opens_in == "new_tab":
             new_page = await context.new_page()
@@ -347,7 +414,6 @@ async def _follow_booking_link(
                 await new_page.wait_for_timeout(5000)
             return
 
-        # Same-window navigation
         try:
             await page.goto(
                 link.href,
@@ -368,7 +434,6 @@ async def _follow_booking_link(
 
     await page.wait_for_timeout(2000)
 
-    # Check if we navigated away
     if page.url != url_before:
         try:
             await page.wait_for_load_state("networkidle", timeout=15000)
@@ -376,12 +441,10 @@ async def _follow_booking_link(
             pass
         return
 
-    # We didn't navigate — likely a modal opened. Try to fill and submit it.
     submitted = await _try_submit_modal_booking_form(page, context, monitor)
     if submitted:
         return
 
-    # If no modal form found, try clicking any new booking links that appeared
     if link.opens_in == "new_tab":
         try:
             async with context.expect_page(timeout=10000) as new_page_info:
@@ -403,20 +466,12 @@ async def _try_submit_modal_booking_form(
     context: BrowserContext,
     monitor: NetworkMonitor,
 ) -> bool:
-    """Try to fill in dates and submit a modal booking form.
-
-    Many hotel brand sites open a modal with a property picker, date fields,
-    and a submit button instead of navigating directly to the booking engine.
-    """
+    """Try to fill in dates and submit a modal booking form."""
     checkin = (date.today() + timedelta(days=14)).strftime("%Y-%m-%d")
     checkout = (date.today() + timedelta(days=15)).strftime("%Y-%m-%d")
 
-    # Step 1: If there's a property/destination dropdown, pick the first one.
-    # Brand-level sites (Hard Rock, Marriott, etc.) require selecting a property
-    # before the booking form can be submitted.
     await _select_first_property(page)
 
-    # Step 2: Fill date inputs
     date_input_selectors = [
         'input[name="arrive"]',
         'input[name="depart"]',
@@ -453,15 +508,12 @@ async def _try_submit_modal_booking_form(
     if not filled_dates:
         return False
 
-    # Step 3: Submit the form. First try building the URL from form data
-    # (most reliable), then fall back to clicking submit buttons.
     form_url = await page.evaluate("""() => {
         var forms = document.querySelectorAll('form');
         for (var i = 0; i < forms.length; i++) {
             var f = forms[i];
             var data = {};
             new FormData(f).forEach(function(v, k) { data[k] = v; });
-            // Check if this form has booking-related fields
             var keys = Object.keys(data).join(' ').toLowerCase();
             if (keys.indexOf('arrive') !== -1 || keys.indexOf('checkin') !== -1 ||
                 keys.indexOf('datein') !== -1 || keys.indexOf('check_in') !== -1) {
@@ -478,7 +530,6 @@ async def _try_submit_modal_booking_form(
     }""")
 
     if form_url:
-        # Inject dates into the constructed URL too
         form_url = _inject_dates_into_url(form_url)
         new_page = await context.new_page()
         monitor.attach(new_page)
@@ -491,7 +542,6 @@ async def _try_submit_modal_booking_form(
         await new_page.wait_for_timeout(5000)
         return True
 
-    # Fallback: try clicking visible submit buttons
     submit_selectors = [
         'button:has-text("Book Now"):visible',
         'button:has-text("Search"):visible',
@@ -536,12 +586,7 @@ async def _try_submit_modal_booking_form(
 
 
 async def _select_first_property(page: Page):
-    """Select the first non-empty option in a property/destination dropdown.
-
-    Brand-level hotel sites have a dropdown to pick a specific property
-    before the booking form can be submitted.
-    """
-    # Find select elements that look like property/destination pickers
+    """Select the first non-empty option in a property/destination dropdown."""
     property_select_keywords = [
         "location", "hotel", "property", "destination", "resort",
     ]
@@ -554,7 +599,6 @@ async def _select_first_property(page: Page):
             var isProperty = keywords.some(function(k) { return idName.indexOf(k) !== -1; });
             if (!isProperty) continue;
 
-            // Count non-empty options — if >3, it's likely a property list
             var options = sel.querySelectorAll('option');
             var nonEmpty = [];
             options.forEach(function(o) {
@@ -562,7 +606,6 @@ async def _select_first_property(page: Page):
             });
             if (nonEmpty.length < 2) continue;
 
-            // Pick the first non-empty option
             sel.value = nonEmpty[0];
             sel.dispatchEvent(new Event('change', {bubbles: true}));
             return nonEmpty[0];
@@ -571,7 +614,7 @@ async def _select_first_property(page: Page):
     }""", property_select_keywords)
 
     if selected:
-        await page.wait_for_timeout(1000)  # Let any dependent fields update
+        await page.wait_for_timeout(1000)
 
 
 async def _click_booking_element(page: Page, link: BookingLinkInfo):
@@ -597,13 +640,7 @@ async def _click_booking_element(page: Page, link: BookingLinkInfo):
 
 
 async def _try_trigger_rate_search(page: Page):
-    """Try to trigger a room/rate search on the booking engine page.
-
-    Many booking engines show a date picker and search button. If we can
-    fill in dates and click search, the Duetto pixel will fire when rates
-    are displayed.
-    """
-    # Common search/submit button selectors on booking engines
+    """Try to trigger a room/rate search on the booking engine page."""
     search_selectors = [
         'button:has-text("Search")',
         'button:has-text("Check Availability")',
@@ -684,18 +721,12 @@ async def _check_gamechanger_dom(page: Page) -> list[str]:
 
 
 async def _check_duetto_in_source(page: Page) -> list[str]:
-    """Check the page HTML source and app state for Duetto references.
-
-    Booking engines like SynXis embed Duetto configuration in their React
-    state or inline scripts even when the pixel doesn't fire in headless mode.
-    Returns raw evidence snippets suitable for proof.
-    """
+    """Check the page HTML source and app state for Duetto references."""
     return await page.evaluate("""
         (function() {
             var evidence = [];
             var patterns = ["duettoresearch", "duettocloud"];
 
-            // Check __INITIAL_STATE__ for Duetto references (SynXis React app)
             if (window.__INITIAL_STATE__) {
                 var stateStr = JSON.stringify(window.__INITIAL_STATE__);
                 var lower = stateStr.toLowerCase();
@@ -712,7 +743,6 @@ async def _check_duetto_in_source(page: Page) -> list[str]:
                 }
             }
 
-            // Check inline scripts for Duetto pixel code
             var scripts = document.querySelectorAll("script:not([src])");
             for (var i = 0; i < scripts.length; i++) {
                 var text = scripts[i].textContent || "";
@@ -727,7 +757,6 @@ async def _check_duetto_in_source(page: Page) -> list[str]:
                 }
             }
 
-            // Check meta tags for CSP that includes Duetto
             var metas = document.querySelectorAll("meta[http-equiv]");
             for (var j = 0; j < metas.length; j++) {
                 var content = metas[j].content || "";
@@ -744,7 +773,6 @@ async def _check_duetto_in_source(page: Page) -> list[str]:
 
 def _calculate_confidence(result: DuettoDetectionResult) -> str:
     """Calculate confidence level based on detection signals."""
-    # Check if pixel was only detected via CSP (not actual network traffic)
     csp_only = any(
         "CSP allowlist" in e for e in result.errors
     )
@@ -752,7 +780,7 @@ def _calculate_confidence(result: DuettoDetectionResult) -> str:
     score = 0
 
     if result.duetto_pixel_detected:
-        score += 1 if csp_only else 3  # CSP-only is weaker signal
+        score += 1 if csp_only else 3
     if result.gamechanger_detected:
         score += 3
     if result.gamechanger_evidence:
@@ -763,7 +791,6 @@ def _calculate_confidence(result: DuettoDetectionResult) -> str:
         score -= 1
 
     if csp_only:
-        # CSP/source-based detection is indirect — cap at medium
         return "medium" if score >= 2 else "low"
 
     if score >= 4:

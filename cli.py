@@ -13,16 +13,16 @@ def main():
         description="Detect Duetto products on hotel booking engines",
     )
     parser.add_argument(
-        "csv_file", nargs="?", help="Path to CSV file (columns: name,website)"
+        "csv_file", nargs="?", help="Path to CSV file (columns: name, city; optional: website)"
     )
     parser.add_argument(
-        "--url", help="Single hotel website URL to scan"
+        "--name", help="Hotel name (for single-hotel scan)"
     )
     parser.add_argument(
-        "--name", help="Hotel name (used with --url)"
+        "--url", help="Hotel website URL (optional if --city provided)"
     )
     parser.add_argument(
-        "--city", help="Hotel city (used with --url for AI booking link discovery)"
+        "--city", help="Hotel city (enables AI lookup of website + booking URL)"
     )
     parser.add_argument(
         "-o", "--output", default="results.csv", help="Output CSV path"
@@ -37,18 +37,28 @@ def main():
 
     args = parser.parse_args()
 
-    if args.url:
+    if args.name:
+        name = args.name
+        url = args.url or ""
+        city = args.city or ""
+        if not url and not city:
+            parser.error("Provide --url or --city with --name")
+            return
+        if url and not url.startswith(("http://", "https://")):
+            url = f"https://{url}"
+        hotels = [{"name": name, "website": url, "city": city}]
+    elif args.url:
         url = args.url
         if not url.startswith(("http://", "https://")):
             url = f"https://{url}"
-        name = args.name or urlparse(url).netloc.replace("www.", "")
+        name = urlparse(url).netloc.replace("www.", "")
         city = args.city or ""
         hotels = [{"name": name, "website": url, "city": city}]
     elif args.csv_file:
         with open(args.csv_file, "r") as f:
             hotels = parse_csv(f.read())
     else:
-        parser.error("Provide a CSV file or use --url")
+        parser.error("Provide a CSV file, --name, or --url")
         return
 
     if not hotels:

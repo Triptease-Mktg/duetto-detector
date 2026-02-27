@@ -47,9 +47,10 @@ def parse_csv(content: str | bytes) -> list[dict]:
         name = row.get(name_col or "name", "").strip()
         website = row.get(website_col or "website", "").strip()
         city = row.get(city_col or "city", "").strip() if city_col else ""
-        if not name or not website:
+        if not name:
             continue
-        if not website.startswith(("http://", "https://")):
+        # Website is optional — Perplexity will find it if city is provided
+        if website and not website.startswith(("http://", "https://")):
             website = f"https://{website}"
         hotels.append({"name": name, "website": website, "city": city})
 

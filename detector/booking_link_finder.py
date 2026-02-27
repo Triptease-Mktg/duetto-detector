@@ -190,7 +190,7 @@ def rank_booking_links(links: list[BookingLinkInfo]) -> list[BookingLinkInfo]:
         # Detection method base scores
         if link.detection_method in ("text_match", "firecrawl_llm"):
             s += 100
-        elif link.detection_method == "ai_query":
+        elif link.detection_method in ("ai_query", "perplexity"):
             s += 95
         elif link.detection_method == "web_search":
             s += 90
@@ -233,27 +233,37 @@ async def find_booking_links_with_fallback(
     """Find booking links using cascading strategies.
 
     Order (short-circuits on first success):
-      0. AI direct query via Claude Haiku (cheapest, 1 call)
+      0. Perplexity AI lookup (cheapest, 1 call, web-search-backed)
       1. Firecrawl+LLM smart scrape
       2. Web search via Firecrawl search API (property-specific)
       3. Brand site deep crawl via Firecrawl map + scrape
       4. Known chain patterns (generic chain URL, last resort)
       5. CSS selector fallback on loaded page
+
+    Note: The main analyzer already calls Perplexity before this cascade.
+    This step is a fallback in case the analyzer didn't get a booking URL.
     """
     has_apis = bool(settings.firecrawl_api_key and settings.anthropic_api_key)
 
-    # 0. AI-first: Ask Claude Haiku directly (cheapest: 1 call, no Firecrawl)
-    if city and settings.anthropic_api_key:
+    # 0. Perplexity AI lookup (web-search-backed, most reliable)
+    if city and settings.perplexity_api_key:
         try:
-            from detector.ai_booking_query import find_booking_link_via_ai
+            from detector.perplexity_lookup import lookup_hotel_urls
+            from models import BookingLinkInfo as BLI
 
-            ai_links = await find_booking_link_via_ai(hotel_name, city)
-            if ai_links:
-                logger.info("AI query: %d link(s) for %s", len(ai_links), url)
-                return ai_links
-            logger.info("AI query: no links for %s", url)
+            lookup = await lookup_hotel_urls(hotel_name, city)
+            if lookup["booking_url"]:
+                logger.info("Perplexity cascade: found booking URL for %s", url)
+                return [BLI(
+                    text="Perplexity-suggested booking link",
+                    href=lookup["booking_url"],
+                    link_type="link",
+                    detection_method="perplexity",
+                    opens_in="new_tab",
+                )]
+            logger.info("Perplexity cascade: no booking URL for %s", url)
         except Exception as e:
-            logger.warning("AI query failed for %s: %s", url, e)
+            logger.warning("Perplexity cascade failed for %s: %s", url, e)
 
     # 1. Firecrawl+LLM smart scrape
     if has_apis:

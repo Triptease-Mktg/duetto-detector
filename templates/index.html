@@ -203,7 +203,7 @@
                     <line x1="12" y1="3" x2="12" y2="15"/>
                 </svg>
                 <p>Drop a CSV file here or click to browse</p>
-                <p class="format-note">Format: name, website (optional: city)</p>
+                <p class="format-note">Format: name, city (optional: website)</p>
                 <input type="file" id="csv-input" accept=".csv">
             </div>
             <div class="file-info" id="file-info"></div>
@@ -213,10 +213,10 @@
             <div class="url-form">
                 <div class="input-row">
                     <input type="text" id="hotel-name" placeholder="Hotel name" style="flex:2">
-                    <input type="text" id="hotel-city" placeholder="City (optional)" style="flex:1">
+                    <input type="text" id="hotel-city" placeholder="City" style="flex:1">
                 </div>
                 <div>
-                    <input type="url" id="hotel-url" placeholder="https://www.hotel-website.com" style="width:100%;padding:10px 14px;border:1px solid #ddd;border-radius:8px;font-size:15px;outline:none">
+                    <input type="url" id="hotel-url" placeholder="Website URL (optional — AI will find it)" style="width:100%;padding:10px 14px;border:1px solid #ddd;border-radius:8px;font-size:15px;outline:none">
                 </div>
             </div>
 
@@ -274,11 +274,15 @@
 
         let selectedFile = null;
         let currentJobId = null;
+        let seenResultIndices = new Set();
+        let scanning = false;
 
         function updateScanBtn() {
+            if (scanning) return;
             const hasFile = !!selectedFile;
-            const hasUrl = hotelName.value.trim() && hotelUrl.value.trim();
-            scanBtn.disabled = !hasFile && !hasUrl;
+            const hasNameAndUrl = hotelName.value.trim() && hotelUrl.value.trim();
+            const hasNameAndCity = hotelName.value.trim() && hotelCity.value.trim();
+            scanBtn.disabled = !hasFile && !hasNameAndUrl && !hasNameAndCity;
         }
 
         uploadArea.addEventListener('click', () => csvInput.click());
@@ -299,11 +303,15 @@
         });
 
         hotelName.addEventListener('input', () => {
-            if (hotelName.value.trim() || hotelUrl.value.trim()) selectedFile = null;
+            if (hotelName.value.trim()) selectedFile = null;
+            updateScanBtn();
+        });
+        hotelCity.addEventListener('input', () => {
+            if (hotelName.value.trim()) selectedFile = null;
             updateScanBtn();
         });
         hotelUrl.addEventListener('input', () => {
-            if (hotelName.value.trim() || hotelUrl.value.trim()) selectedFile = null;
+            if (hotelName.value.trim()) selectedFile = null;
             updateScanBtn();
         });
 
@@ -323,22 +331,24 @@
 
         scanBtn.addEventListener('click', async () => {
             scanBtn.disabled = true;
+            scanning = true;
 
-            const hasUrl = hotelName.value.trim() && hotelUrl.value.trim();
+            const hasName = hotelName.value.trim();
             let endpoint, body;
 
-            if (hasUrl) {
+            if (hasName) {
                 endpoint = '/scan-url';
                 body = new FormData();
                 body.append('name', hotelName.value.trim());
                 body.append('website', hotelUrl.value.trim());
-                if (hotelCity.value.trim()) body.append('city', hotelCity.value.trim());
+                body.append('city', hotelCity.value.trim());
             } else if (selectedFile) {
                 endpoint = '/scan';
                 body = new FormData();
                 body.append('csv_file', selectedFile);
             } else {
                 scanBtn.disabled = false;
+                scanning = false;
                 return;
             }
 
@@ -350,10 +360,12 @@
                     fileInfo.textContent = data.detail || 'Scan failed';
                     fileInfo.style.color = '#dc3545';
                     scanBtn.disabled = false;
+                    scanning = false;
                     return;
                 }
 
                 currentJobId = data.job_id;
+                seenResultIndices = new Set();
                 progressSection.style.display = 'block';
                 resultsSection.style.display = 'block';
                 resultsBody.innerHTML = '';
@@ -364,6 +376,7 @@
                 fileInfo.textContent = 'Scan failed: ' + err.message;
                 fileInfo.style.color = '#dc3545';
                 scanBtn.disabled = false;
+                scanning = false;
             }
         });
 
@@ -389,6 +402,7 @@
 
                 if (data.type === 'done') {
                     source.close();
+                    scanning = false;
                     progressText.textContent = 'Scan complete!';
                     progressBar.style.width = '100%';
                     downloadBtn.disabled = false;
@@ -397,17 +411,22 @@
 
                 if (data.type === 'error') {
                     source.close();
+                    scanning = false;
+                    scanBtn.disabled = false;
                     progressText.textContent = 'Error: ' + data.message;
                 }
             };
 
             source.onerror = () => {
                 source.close();
+                scanning = false;
                 progressText.textContent = 'Connection lost. Check results below.';
             };
         }
 
         function addResultRow(data) {
+            if (seenResultIndices.has(data.index)) return;
+            seenResultIndices.add(data.index);
             const row = document.createElement('tr');
             const isDuetto = data.duetto_pixel || data.gamechanger;
             const pixelBadge = data.duetto_pixel
