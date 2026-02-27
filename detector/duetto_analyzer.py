@@ -167,7 +167,7 @@ async def analyze_hotel(
         await dismiss_cookie_consent(page)
 
         # Step 3: Find booking links (Firecrawl+LLM if configured, else selectors)
-        booking_links = await find_booking_links_with_fallback(page, website_url)
+        booking_links = await find_booking_links_with_fallback(page, website_url, hotel_name)
         result.booking_links_found = booking_links
 
         if not booking_links:

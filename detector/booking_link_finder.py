@@ -187,9 +187,15 @@ def rank_booking_links(links: list[BookingLinkInfo]) -> list[BookingLinkInfo]:
 
     def score(link: BookingLinkInfo) -> int:
         s = 0
-        # Text matches are highest confidence
-        if link.detection_method == "text_match":
+        # Detection method base scores
+        if link.detection_method in ("text_match", "firecrawl_llm"):
             s += 100
+        elif link.detection_method == "web_search":
+            s += 90
+        elif link.detection_method == "brand_crawl":
+            s += 85
+        elif link.detection_method == "chain_pattern":
+            s += 70
         elif link.detection_method == "href_pattern":
             s += 50
         elif link.detection_method == "iframe_src":
@@ -220,24 +226,68 @@ def rank_booking_links(links: list[BookingLinkInfo]) -> list[BookingLinkInfo]:
 
 
 async def find_booking_links_with_fallback(
-    page: Page, url: str
+    page: Page, url: str, hotel_name: str = ""
 ) -> list[BookingLinkInfo]:
-    """Find booking links using Firecrawl+LLM first, with selector fallback."""
-    if settings.firecrawl_api_key and settings.anthropic_api_key:
+    """Find booking links using cascading strategies.
+
+    Order (short-circuits on first success):
+      1. Firecrawl+LLM smart scrape (existing)
+      2. Web search via Firecrawl search API (property-specific)
+      3. Brand site deep crawl via Firecrawl map + scrape
+      4. Known chain patterns (generic chain URL, last resort)
+      5. CSS selector fallback on loaded page (existing)
+    """
+    has_apis = bool(settings.firecrawl_api_key and settings.anthropic_api_key)
+
+    # 1. Firecrawl+LLM smart scrape
+    if has_apis:
         try:
             from detector.smart_link_finder import find_booking_links_smart
 
             smart_links = await find_booking_links_smart(url)
             if smart_links:
-                logger.info(
-                    "Firecrawl+LLM found %d booking link(s) for %s",
-                    len(smart_links), url,
-                )
+                logger.info("Smart finder: %d link(s) for %s", len(smart_links), url)
                 return smart_links
-            logger.info(
-                "Firecrawl+LLM found no links for %s, falling back", url
-            )
+            logger.info("Smart finder: no links for %s", url)
         except Exception as e:
-            logger.warning("Smart link finder failed for %s: %s", url, e)
+            logger.warning("Smart finder failed for %s: %s", url, e)
 
+    # 2. Web search (Firecrawl search API — finds property-specific URLs)
+    if has_apis and hotel_name:
+        try:
+            from detector.fallback_web_search import find_booking_links_web_search
+
+            search_links = await find_booking_links_web_search(hotel_name, url)
+            if search_links:
+                logger.info("Web search: %d link(s) for %s", len(search_links), url)
+                return search_links
+        except Exception as e:
+            logger.warning("Web search failed for %s: %s", url, e)
+
+    # 3. Brand site deep crawl (Firecrawl map + scrape)
+    if has_apis and hotel_name:
+        try:
+            from detector.fallback_brand_crawl import find_booking_links_brand_crawl
+
+            crawl_links = await find_booking_links_brand_crawl(hotel_name, url)
+            if crawl_links:
+                logger.info("Brand crawl: %d link(s) for %s", len(crawl_links), url)
+                return crawl_links
+        except Exception as e:
+            logger.warning("Brand crawl failed for %s: %s", url, e)
+
+    # 4. Known chain patterns (generic chain URL — last resort before selectors)
+    if hotel_name:
+        try:
+            from detector.fallback_chain_patterns import find_booking_links_chain_pattern
+
+            chain_links = await find_booking_links_chain_pattern(url, hotel_name)
+            if chain_links:
+                logger.info("Chain pattern: %d link(s) for %s", len(chain_links), url)
+                return chain_links
+        except Exception as e:
+            logger.warning("Chain pattern failed for %s: %s", url, e)
+
+    # 5. CSS selector fallback
+    logger.info("All API strategies exhausted for %s, using CSS selectors", url)
     return await find_booking_links(page)
